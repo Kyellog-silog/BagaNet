@@ -1,0 +1,70 @@
+FROM python:3.9-slim
+
+WORKDIR /app
+
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+ENV MODEL_DIR=/app/models
+ENV CLIENTS_DB=/app/data/clients.json
+ENV METRICS_DB=/app/data/metrics.json
+ENV PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python
+ENV OMP_NUM_THREADS=2
+ENV MKL_NUM_THREADS=2
+ENV OPENBLAS_NUM_THREADS=2
+ENV NUMEXPR_NUM_THREADS=2
+ENV TORCH_CPU_CORES=2
+ENV MPLCONFIGDIR=/tmp/matplotlib
+
+RUN mkdir -p /app/models /app/data /app/logs
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    g++ \
+    procps \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+
+RUN pip config set global.timeout 100 && \
+    pip config set global.retries 5 && \
+    pip install --no-cache-dir --upgrade pip || pip install --upgrade pip
+
+RUN pip install --no-cache-dir setuptools wheel || pip install setuptools wheel
+
+
+
+RUN pip install --no-cache-dir protobuf==3.19.6
+
+RUN pip install --no-cache-dir torch==1.13.1+cpu torchvision==0.14.1+cpu --index-url https://download.pytorch.org/whl/cpu || \
+    pip install torch==1.13.1 torchvision==0.14.1
+
+RUN pip install --no-cache-dir -r requirements.txt || pip install -r requirements.txt
+
+
+RUN pip install --no-cache-dir gunicorn psutil || pip install gunicorn psutil
+
+COPY models/vgg16_state_dict.pth /app/models/
+
+COPY . .
+
+RUN mkdir -p $(dirname $CLIENTS_DB) && \
+    touch $CLIENTS_DB && \
+    echo "{}" > $CLIENTS_DB && \
+    touch $METRICS_DB && \
+    echo '{"history": [], "current_version": 0}' > $METRICS_DB
+
+RUN chmod -R 755 /app
+
+RUN adduser --disabled-password --gecos '' appuser
+RUN chown -R appuser:appuser /app
+USER appuser
+
+ENV SKIP_TF_CONVERSIONS=false
+
+EXPOSE 5050
+
+CMD ["gunicorn", "--bind", "0.0.0.0:5050", "--workers", "1", "--threads", "2", \
+     "--timeout", "120", "--worker-tmp-dir", "/dev/shm", \
+     "--log-level", "info", "--access-logfile", "/app/logs/access.log", \
+     "--error-logfile", "/app/logs/error.log", "app:app"]
